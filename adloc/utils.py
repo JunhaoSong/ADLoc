@@ -17,6 +17,13 @@ from ._ransac import RANSACRegressor
 def invert(picks, stations, config, estimator, event_index, event_init):
     """
     Earthquake location for a single event using RANSAC.
+    Picks with a true "candidate" column take no part in the location. Once the event is located, the candidates
+    that fit it (|residual_time| <= max_residual_time) are added to it as inliers (mask 1): at most one per station
+    and phase (the best fitting), and none where the event already has an inlier. With a "neighbors" column in
+    stations (the station_ids each station links to, VORA's station graph), only candidates at stations reached from
+    the event's stations through that graph, link after link, are added, so the stations of the event (P, S or both)
+    stay one spatial cluster as VORA's. Candidates that are not added are not returned;
+    inlier.select_candidates picks them, inlier.keep_best_added settles picks added to several events.
     """
 
     def is_model_valid(estimator, X, y):
@@ -66,6 +73,11 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     if has_amp and ("station_term_amplitude" not in stations.columns):
         stations["station_term_amplitude"] = 0.0
 
+    # candidate picks are set aside; those fitting the located event are added at the end
+    candidates = None
+    if "candidate" in picks.columns and picks["candidate"].any():
+        is_candidate = picks["candidate"].to_numpy(bool)
+        picks, candidates = picks[~is_candidate].copy(), picks[is_candidate].copy()
 
     stations_ = stations[stations["station_id"].isin(picks["station_id"].unique())].copy()
     if "proj" not in config or config["proj"] is None:
@@ -233,6 +245,41 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     else:
         picks["residual_amplitude"] = 0.0
     picks["mask"] = inlier_mask.astype(int)
+
+    ## Add the candidate picks that fit the located event
+    if (candidates is not None) and (event is not None) and candidates["station_id"].isin(stations["station_id"]).any():
+        term_columns = ["station_term_time_p", "station_term_time_s"] + (["station_term_amplitude"] if has_amp else [])
+        cand = candidates[candidates["station_id"].isin(stations["station_id"])].merge(
+            stations[["station_id", "longitude", "latitude", "z_km"] + term_columns], on="station_id"
+        )
+        cand["x_km"], cand["y_km"] = proj(cand["longitude"].values, cand["latitude"].values)
+        term = np.where(cand["phase_type"] == 0, cand["station_term_time_p"], cand["station_term_time_s"])
+        output = estimator.predict(cand[["idx_sta", "phase_type", "phase_score", "x_km", "y_km", "z_km"]].values)
+        cand["residual_time"] = (cand["phase_time"] - t0).dt.total_seconds().values - term - output[:, 0]
+        if has_amp:
+            cand["residual_amplitude"] = cand["phase_amplitude"] - cand["station_term_amplitude"] - output[:, 1]
+        else:
+            cand["residual_amplitude"] = 0.0
+        # inliers of the located event, one per station and phase, none where the event already has an inlier
+        cand = cand[np.abs(cand["residual_time"]) <= config["max_residual_time"]]
+        inliers = picks[picks["mask"] == 1]
+        have = pd.MultiIndex.from_frame(inliers[["station_id", "phase_type"]])
+        cand = cand[~pd.MultiIndex.from_frame(cand[["station_id", "phase_type"]]).isin(have)]
+        cand = cand.iloc[np.argsort(np.abs(cand["residual_time"].values), kind="stable")]
+        cand = cand.drop_duplicates(["station_id", "phase_type"])
+        # stations reached from the event's stations through the station graph, one link after another
+        if "neighbors" in stations.columns:
+            neighbors = dict(zip(stations["station_id"], stations["neighbors"]))
+            joined, pending = set(inliers["station_id"]), set(cand["station_id"])
+            while True:
+                linked = set().union(*(neighbors.get(s, ()) for s in joined))  # the stations they link to
+                new = (pending - joined) & linked
+                if not new:
+                    break
+                joined |= new
+            cand = cand[cand["station_id"].isin(joined)]
+        added = cand[list(candidates.columns) + ["residual_time", "residual_amplitude"]].assign(mask=1)
+        picks = pd.concat([picks, added])
 
     # ####################################### Debug #######################################
     # import os

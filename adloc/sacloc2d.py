@@ -1,4 +1,5 @@
 # %%
+import copy
 import warnings
 
 import numpy as np
@@ -6,7 +7,7 @@ import scipy
 from sklearn.base import BaseEstimator
 
 from ._ransac import RANSACRegressor
-from .eikonal2d import calc_grad_traveltime, calc_traveltime, init_eikonal2d
+from .eikonal2d import calc_traveltime, calc_traveltime_grad, init_eikonal2d
 from .gmpe import calc_amp, calc_mag
 
 # from sklearn.linear_model import RANSACRegressor
@@ -54,6 +55,13 @@ class ADLoc(BaseEstimator):
         self.magnitudes = np.ones(num_event) * -999.0
         self.has_amplitude = False
 
+    def __sklearn_clone__(self):
+        """The fresh estimator RANSAC fits (sklearn's clone, once per event): the same parameters, sharing the
+        read-only config and travel-time tables. sklearn's own clone deep-copies every parameter, i.e. the tables
+        (hundreds of MB) for every event."""
+        return type(self)(self.config, num_event=self.num_event, events=copy.deepcopy(self.events),
+                          eikonal=self.eikonal)
+
     @staticmethod
     def l2_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, eikonal=None, reduce_loss=False):
         """
@@ -69,7 +77,8 @@ class ADLoc(BaseEstimator):
             v = np.array([vel[t] for t in phase_type])
             tt = np.linalg.norm(event[:3] - station_loc, axis=-1) / v + event[3]
         else:
-            tt = calc_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal) + event[3]
+            tt, grad = calc_traveltime_grad(event[np.newaxis, :3], station_loc, phase_type, eikonal)
+            tt = tt + event[3]
 
         if reduce_loss:
             loss = 0.5 * np.sum((tt - y) ** 2 * phase_weight)
@@ -84,7 +93,6 @@ class ADLoc(BaseEstimator):
                 / v[:, np.newaxis]
             )
         else:
-            grad = calc_grad_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal)
             J[:, :3] = grad
 
         if reduce_loss:
@@ -106,7 +114,8 @@ class ADLoc(BaseEstimator):
             v = np.array([vel[t] for t in phase_type])
             tt = np.linalg.norm(event[:3] - station_loc, axis=-1) / v + event[3]
         else:
-            tt = calc_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal) + event[3]
+            tt, grad = calc_traveltime_grad(event[np.newaxis, :3], station_loc, phase_type, eikonal)
+            tt = tt + event[3]
 
         t_diff = tt - y
         l1 = np.squeeze((np.abs(t_diff) > sigma))
@@ -124,7 +133,6 @@ class ADLoc(BaseEstimator):
                 / v[:, np.newaxis]
             )
         else:
-            grad = calc_grad_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal)
             J[:, :3] = grad
 
         J = np.sum(

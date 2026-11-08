@@ -188,7 +188,11 @@ def traveltime_grad(dx, dy, z, z_sta, phase_type, eikonal):
     """Travel times (n,) and their gradients w.r.t. the event location (n, 3), for events at horizontal offsets dx, dy
     (km) from stations at depth z_sta and at absolute depth z (km); phase_type 0 (P) or 1 (S), one value or one per pick."""
     n = len(dx)
-    vec = lambda x, dtype: np.ascontiguousarray(np.broadcast_to(np.asarray(x), (n,)), dtype=dtype)
+
+    def vec(x, dtype):  # (n,) contiguous; broadcast only when needed (called at every step of every fit)
+        x = np.asarray(x, dtype=dtype)
+        return x if x.shape == (n,) and x.flags.c_contiguous else np.ascontiguousarray(np.broadcast_to(x, (n,)))
+
     z_sta, z_tab = vec(z_sta, float), eikonal["station_z"]
     itab = np.searchsorted((z_tab[1:] + z_tab[:-1]) / 2, z_sta)  # the nearest table by depth (robust to float32 depths)
     if np.any(np.abs(z_tab[itab] - z_sta) > DZ_STA / 2 + 1e-4):
@@ -199,7 +203,7 @@ def traveltime_grad(dx, dy, z, z_sta, phase_type, eikonal):
 
 def _eval(event_locs, station_locs, phase_type, eikonal):
     """Travel times and gradients for paired event and station locations ((n, 3) or (1, 3)), phases 0 (P) or 1 (S)."""
-    e, s = np.broadcast_arrays(np.asarray(event_locs, float), np.asarray(station_locs, float))
+    e, s = np.asarray(event_locs, float), np.asarray(station_locs, float)  # a (1, 3) side broadcasts in the differences
     return traveltime_grad(e[:, 0] - s[:, 0], e[:, 1] - s[:, 1], e[:, 2], s[:, 2], phase_type, eikonal)
 
 
@@ -229,6 +233,13 @@ def calc_grad_traveltime(event_loc, station_loc, phase_type, eikonal):
     eikonal: dictionary of the eikonal timetable
     """
     return _eval(event_loc, station_loc, phase_type, eikonal)[1]
+
+
+def calc_traveltime_grad(event_loc, station_loc, phase_type, eikonal):
+    """calc_traveltime and calc_grad_traveltime from a single table lookup (each lookup yields both): the time as
+    calc_traveltime returns it (float32) and the gradient."""
+    tt, grad = _eval(event_loc, station_loc, phase_type, eikonal)
+    return tt.astype(np.float32), grad
 
 
 def grad_traveltime(event_index, station_index, phase_type, events, stations, eikonal):

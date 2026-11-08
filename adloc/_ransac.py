@@ -413,10 +413,10 @@ class RANSACRegressor(
 
         random_state = check_random_state(self.random_state)
 
-        try:  # Not all estimator accept a random_state
+        # Not all estimators accept a random_state. Asked first rather than caught: the ValueError's message holds the
+        # estimator's repr, which for ADLoc prints its travel-time tables (~0.1 s for every event).
+        if "random_state" in estimator.get_params(deep=False):
             estimator.set_params(random_state=random_state)
-        except ValueError:
-            pass
 
         estimator_fit_has_sample_weight = has_fit_parameter(estimator, "sample_weight")
         estimator_name = type(estimator).__name__
