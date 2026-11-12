@@ -61,13 +61,18 @@ def select_candidates(events, event_picks, pool, stations, config, event_key="id
     pairs["start"] = pairs["time"] - margin
     pairs["end"] = pairs["time"] + pd.to_timedelta(pairs["tt"], unit="s") + margin
 
-    # the pool's picks of each station within each of its events' windows
+    # the pool's picks of each station within each of its events' windows; the pool is sorted by station and time
+    # once, so each station's picks are a slice of it
     pool = pool.reset_index(drop=True)
+    codes, station_ids = pd.factorize(pool["station_id"])
+    order = np.lexsort((pool["phase_time"].to_numpy(), codes))
+    sorted_codes = codes[order]
+    sorted_times = pool["phase_time"].to_numpy()[order]
     rows, keys = [], []
     for station_id, station_pairs in pairs.groupby("station_id"):
-        at_station = np.flatnonzero(pool["station_id"].to_numpy() == station_id)
-        at_station = at_station[np.argsort(pool["phase_time"].to_numpy()[at_station], kind="stable")]
-        times = pool["phase_time"].to_numpy()[at_station]
+        code = station_ids.get_loc(station_id)
+        first, last = np.searchsorted(sorted_codes, [code, code + 1])
+        at_station, times = order[first:last], sorted_times[first:last]
         lo = np.searchsorted(times, station_pairs["start"].to_numpy(times.dtype), side="left")
         hi = np.searchsorted(times, station_pairs["end"].to_numpy(times.dtype), side="right")
         rows.append(np.concatenate([at_station[a:b] for a, b in zip(lo, hi)] + [np.array([], int)]))
